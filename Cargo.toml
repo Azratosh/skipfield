@@ -1,0 +1,6 @@
+[package]
+name = "skipfield"
+version = "0.1.0-alpha"
+edition = "2021"
+
+[dependencies]
