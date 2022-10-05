@@ -2,5 +2,7 @@
 name = "skipfield"
 version = "0.1.0-alpha"
 edition = "2021"
+description = "A type of array that keeps track of occupied and freed slots in a container, enabling quick iteration."
+license = "GPL-2.0-or-later"
 
 [dependencies]
