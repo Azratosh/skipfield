@@ -4,7 +4,7 @@ use std::ops::*;
 
 pub trait Skipfield
 where
-    Self: Clone + Index<usize>,
+    Self: Clone + Index<usize> + IntoIterator<Item = usize>,
     Self::ValueType: Copy + Into<usize>,
 {
     type ValueType;
@@ -41,6 +41,10 @@ where
         for index in self.determine_skip_range(range) {
             self.include(index);
         }
+    }
+
+    fn iter(&self) -> RawIter<'_, Self> {
+        RawIter::new(&self)
     }
 
     // === === === === === === === === ===
@@ -414,20 +418,43 @@ impl RawSkipfield<variant::HCJC> {
 // === === Iteration === ===
 
 #[derive(Clone, Debug)]
-struct RawIntoIter<SF: Skipfield> {
+pub struct RawIntoIter<SF> {
     index_front: usize,
     index_back: usize,
     skipfield: SF,
 }
 
+#[derive(Clone, Debug)]
+pub struct RawIter<'a, SF: Skipfield> {
+    index_front: usize,
+    index_back: usize,
+    skipfield: &'a SF,
+}
+
 impl<SF: Skipfield> RawIntoIter<SF> {
     #[inline(always)]
-    fn is_exhausted(&self) -> bool {
+    pub fn is_exhausted(&self) -> bool {
         self.index_front > self.index_back
     }
 
     #[inline(always)]
-    fn new(skipfield: SF) -> Self {
+    pub fn new(skipfield: SF) -> Self {
+        Self {
+            index_front: 0,
+            index_back: skipfield.capacity() - 1,
+            skipfield,
+        }
+    }
+}
+
+impl<'a, SF: Skipfield> RawIter<'a, SF> {
+    #[inline(always)]
+    pub fn is_exhausted(&self) -> bool {
+        self.index_front > self.index_back
+    }
+
+    #[inline(always)]
+    pub fn new(skipfield: &'a SF) -> Self {
         Self {
             index_front: 0,
             index_back: skipfield.capacity() - 1,
@@ -437,6 +464,30 @@ impl<SF: Skipfield> RawIntoIter<SF> {
 }
 
 impl Iterator for RawIntoIter<BooleanSkipfield> {
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_exhausted() {
+            return None;
+        }
+
+        while self.skipfield[self.index_front] {
+            self.index_front += 1;
+
+            if self.is_exhausted() {
+                return None;
+            }
+        }
+
+        let index_to_return = self.index_front;
+        self.index_front += 1;
+
+        Some(index_to_return)
+    }
+}
+
+impl<'a> Iterator for RawIter<'a, BooleanSkipfield> {
     type Item = usize;
 
     #[inline(always)]
@@ -482,7 +533,55 @@ impl DoubleEndedIterator for RawIntoIter<BooleanSkipfield> {
     }
 }
 
+impl<'a> DoubleEndedIterator for RawIter<'a, BooleanSkipfield> {
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.is_exhausted() {
+            return None;
+        }
+
+        while self.skipfield[self.index_back] {
+            self.index_back -= 1;
+
+            if self.is_exhausted() {
+                return None;
+            }
+        }
+
+        let index_to_return = self.index_back;
+        self.index_back -= 1;
+
+        Some(index_to_return)
+    }
+}
+
 impl Iterator for RawIntoIter<HCJCSkipfield> {
+    type Item = usize;
+
+    #[inline(always)]
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.is_exhausted() {
+            return None;
+        }
+
+        let indices_to_skip = self.skipfield[self.index_front];
+
+        if indices_to_skip > 0 {
+            if let Some(result) = self.index_front.checked_add(indices_to_skip) {
+                self.index_front = result;
+            } else {
+                self.index_front = self.skipfield.capacity();
+                return None;
+            }
+        }
+
+        let index_to_return = self.index_front;
+        self.index_front += 1;
+
+        Some(index_to_return)
+    }
+}
+impl<'a> Iterator for RawIter<'a, HCJCSkipfield> {
     type Item = usize;
 
     #[inline(always)]
@@ -534,6 +633,31 @@ impl DoubleEndedIterator for RawIntoIter<HCJCSkipfield> {
     }
 }
 
+impl<'a> DoubleEndedIterator for RawIter<'a, HCJCSkipfield> {
+    #[inline(always)]
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.is_exhausted() {
+            return None;
+        }
+
+        let indices_to_skip = self.skipfield[self.index_back];
+
+        if indices_to_skip > 0 {
+            if let Some(result) = self.index_back.checked_sub(indices_to_skip) {
+                self.index_back = result;
+            } else {
+                self.index_front = self.skipfield.capacity();
+                return None;
+            }
+        }
+
+        let index_to_return = self.index_back;
+        self.index_back -= 1;
+
+        Some(index_to_return)
+    }
+}
+
 // === === IntoIterator Implementations === ===
 
 impl IntoIterator for BooleanSkipfield {
@@ -546,6 +670,16 @@ impl IntoIterator for BooleanSkipfield {
     }
 }
 
+impl<'a> IntoIterator for &'a BooleanSkipfield {
+    type Item = usize;
+
+    type IntoIter = RawIter<'a, BooleanSkipfield>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 impl IntoIterator for HCJCSkipfield {
     type Item = usize;
 
@@ -553,6 +687,16 @@ impl IntoIterator for HCJCSkipfield {
 
     fn into_iter(self) -> Self::IntoIter {
         Self::IntoIter::new(self)
+    }
+}
+
+impl<'a> IntoIterator for &'a HCJCSkipfield {
+    type Item = usize;
+
+    type IntoIter = RawIter<'a, HCJCSkipfield>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
     }
 }
 
