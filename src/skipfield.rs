@@ -1,6 +1,6 @@
 use bitvec::prelude::*;
 
-use std::{marker::PhantomData, ops::*};
+use std::ops::*;
 
 pub trait Skipfield
 where
@@ -80,67 +80,104 @@ where
 // === === Base Definitions === ===
 
 #[derive(Clone, Debug)]
-struct RawSkipfield<Variant, Container> {
-    field: Container,
-    _phantom: PhantomData<Variant>,
+pub struct RawSkipfield<Variant> {
+    variant: Variant,
 }
 
-#[derive(Clone, Debug)]
-struct Boolean;
+mod variant {
+    use std::marker::PhantomData;
+
+    use super::BitVec;
 
 #[derive(Clone, Debug)]
-struct HCJC;
+    pub struct Boolean {
+        pub container: BitVec,
+    }
 
 #[derive(Clone, Debug)]
-struct LCJC;
+    pub struct JumpCounting<Pattern> {
+        pub container: Vec<usize>,
+        _phantom: PhantomData<Pattern>,
+    }
+
+    impl<Pattern> JumpCounting<Pattern> {
+        pub fn new() -> Self {
+            Self {
+                container: Vec::new(),
+                _phantom: PhantomData,
+            }
+        }
+
+        pub fn with_capacity(capacity: usize) -> Self {
+            let mut vec = Vec::with_capacity(capacity);
+            vec.resize(capacity, 0);
+            vec.shrink_to_fit();
+
+            Self {
+                container: vec,
+                _phantom: PhantomData,
+            }
+        }
+    }
+
+    pub mod jc {
+#[derive(Clone, Debug)]
+        pub struct HighComplexity;
 
 #[derive(Clone, Debug)]
-struct MJC;
+        pub struct LowComplexity;
 
-// === === Concrete Skipfield Types === ===
+        #[derive(Clone, Debug)]
+        pub struct Modulated;
+    }
 
-type BooleanSkipfield = RawSkipfield<Boolean, BitVec>;
-type HCJCSkipfield = RawSkipfield<HCJC, Vec<usize>>;
-// type LCJCSkipfield = RawSkipfield<LCJC, Vec<usize>>;
-// type MJCSkipfield = RawSkipfield<MJC, Vec<usize>>;
+    pub type HCJC = JumpCounting<jc::HighComplexity>;
+    // pub type LCJC = JumpCounting<jc::HighComplexity>;
+    // pub type MJC = JumpCounting<jc::HighComplexity>;
+}
+
+pub type BooleanSkipfield = RawSkipfield<variant::Boolean>;
+pub type HCJCSkipfield = RawSkipfield<variant::HCJC>;
 
 // === === Indexing === ===
 
-impl Index<usize> for BooleanSkipfield {
+impl Index<usize> for RawSkipfield<variant::Boolean> {
     type Output = bool;
 
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
-        &self.field[index]
+        &self.variant.container[index]
     }
 }
 
-impl<Variant> Index<usize> for RawSkipfield<Variant, Vec<usize>> {
+impl<Pattern> Index<usize> for RawSkipfield<variant::JumpCounting<Pattern>> {
     type Output = usize;
 
     #[inline(always)]
     fn index(&self, index: usize) -> &Self::Output {
-        &self.field[index]
+        &self.variant.container[index]
+    }
+}
+impl<Pattern> IndexMut<usize> for RawSkipfield<variant::JumpCounting<Pattern>> {
+    #[inline(always)]
+    fn index_mut(&mut self, index: usize) -> &mut Self::Output {
+        &mut self.variant.container[index]
     }
 }
 
 // === === Generic Implementations for Variants === ===
 
-impl<Variant> RawSkipfield<Variant, Vec<usize>> {
+impl<Pattern> RawSkipfield<variant::JumpCounting<Pattern>> {
     #[inline(always)]
     fn new(capacity: usize) -> Self {
-        let mut vec = Vec::with_capacity(capacity);
-        vec.resize(capacity, 0);
-
         Self {
-            field: vec,
-            _phantom: PhantomData,
+            variant: variant::JumpCounting::<Pattern>::with_capacity(capacity),
         }
     }
 
     #[inline(always)]
     fn capacity(&self) -> usize {
-        self.field.capacity()
+        self.variant.container.capacity()
     }
 }
 
@@ -149,20 +186,22 @@ impl<Variant> RawSkipfield<Variant, Vec<usize>> {
 impl Skipfield for BooleanSkipfield {
     type ValueType = bool;
 
+    #[inline(always)]
     fn new(capacity: usize) -> Self {
         let mut vec = BitVec::with_capacity(capacity);
         vec.resize(capacity, false);
 
         Self {
-            field: vec,
-            _phantom: PhantomData,
+            variant: variant::Boolean { container: vec },
         }
     }
 
+    #[inline(always)]
     fn capacity(&self) -> usize {
-        self.field.capacity()
+        self.variant.container.len()
     }
 
+    #[inline(always)]
     fn get(&self, index: usize) -> Option<Self::ValueType> {
         if index < self.capacity() {
             Some(self[index])
@@ -171,22 +210,25 @@ impl Skipfield for BooleanSkipfield {
         }
     }
 
+    #[inline(always)]
     unsafe fn get_unchecked(&self, index: usize) -> Self::ValueType {
         self[index]
     }
 
+    #[inline(always)]
     fn skip(&mut self, index: usize) {
-        self.field.set(index, true);
+        self.variant.container.set(index, true);
     }
 
+    #[inline(always)]
     fn include(&mut self, index: usize) {
-        self.field.set(index, false);
+        self.variant.container.set(index, false);
     }
 }
 
 // === === HCJC Skipfield === ===
 
-impl Skipfield for HCJCSkipfield {
+impl Skipfield for RawSkipfield<variant::HCJC> {
     type ValueType = usize;
 
     #[inline(always)]
@@ -199,6 +241,7 @@ impl Skipfield for HCJCSkipfield {
         self.capacity()
     }
 
+    #[inline(always)]
     fn get(&self, index: usize) -> Option<Self::ValueType> {
         if index < self.capacity() {
             Some(self[index])
@@ -207,13 +250,14 @@ impl Skipfield for HCJCSkipfield {
         }
     }
 
+    #[inline(always)]
     unsafe fn get_unchecked(&self, index: usize) -> Self::ValueType {
         self[index]
     }
 
     #[inline(always)]
     fn skip(&mut self, index: usize) {
-        if self.field[index] != 0 {
+        if self[index] != 0 {
             return;
         }
 
@@ -221,45 +265,45 @@ impl Skipfield for HCJCSkipfield {
 
         match case {
             AdjacentIndices::LeftAndRightZero => {
-                self.field[index] = 1;
+                self[index] = 1;
             }
             AdjacentIndices::LeftNonZero => {
                 // index is now end of skip block to the left
-                self.field[index] = 1 + self.field[index - 1];
+                self[index] = 1 + self[index - 1];
 
-                let start_index = index - self.field[index - 1];
+                let start_index = index - self[index - 1];
 
                 // update start of skip block
-                self.field[start_index] = self.field[index];
+                self[start_index] = self[index];
             }
             AdjacentIndices::RightNonZero => {
-                let right_value = self.field[index + 1];
+                let right_value = self[index + 1];
 
                 // index is now start of skip block to the right
-                self.field[index] = right_value + 1;
+                self[index] = right_value + 1;
 
                 let mut values_to_right = right_value;
                 let mut index_and_skip_offset = 1;
 
                 while values_to_right > 0 {
-                    self.field[index + index_and_skip_offset] = index_and_skip_offset;
+                    self[index + index_and_skip_offset] = index_and_skip_offset;
                     index_and_skip_offset += 1;
                     values_to_right -= 1;
                 }
             }
             AdjacentIndices::LeftAndRightNonZero => {
-                let right_value = 1 + self.field[index + 1];
-                let left_value = self.field[index - 1];
+                let right_value = 1 + self[index + 1];
+                let left_value = self[index - 1];
 
                 // start of skip block to left is updated
-                self.field[index - left_value] = self.field[index - left_value] + right_value;
+                self[index - left_value] = self[index - left_value] + right_value;
 
                 let mut indices_to_update = right_value;
                 let mut next_skip_value = left_value + 1;
                 let mut next_index = index;
 
                 while indices_to_update > 0 {
-                    self.field[next_index] = next_skip_value;
+                    self[next_index] = next_skip_value;
 
                     next_index += 1;
                     next_skip_value += 1;
@@ -272,7 +316,7 @@ impl Skipfield for HCJCSkipfield {
 
     #[inline(always)]
     fn include(&mut self, index: usize) {
-        if self.field[index] == 0 {
+        if self[index] == 0 {
             return;
         }
 
@@ -280,33 +324,33 @@ impl Skipfield for HCJCSkipfield {
 
         match case {
             AdjacentIndices::LeftAndRightZero => {
-                self.field[index] = 0;
+                self[index] = 0;
             }
             AdjacentIndices::LeftNonZero => {
                 // index is at the end of skip block to the left
-                let value_for_start = self.field[index] - 1;
+                let value_for_start = self[index] - 1;
 
                 // update index at beginning of skipblock
-                self.field[index - value_for_start] = value_for_start;
+                self[index - value_for_start] = value_for_start;
 
-                self.field[index] = 0;
+                self[index] = 0;
             }
             AdjacentIndices::RightNonZero => {
                 // index is at the start of skip block to the right
 
                 // get new value of next index
-                let next_index_value = self.field[index] - 1;
+                let next_index_value = self[index] - 1;
 
-                self.field[index] = 0;
+                self[index] = 0;
 
                 // update index to the right, which is now the new start of the skip block
-                self.field[index + 1] = next_index_value;
+                self[index + 1] = next_index_value;
 
                 let mut indices_to_update = next_index_value - 1;
                 let mut next_index_offset = 2;
 
                 while indices_to_update > 0 {
-                    self.field[index + next_index_offset] = next_index_offset;
+                    self[index + next_index_offset] = next_index_offset;
 
                     next_index_offset += 1;
                     indices_to_update -= 1;
@@ -316,21 +360,21 @@ impl Skipfield for HCJCSkipfield {
                 // skip block must be split into two separate blocks
 
                 // phase 1
-                let current_value = self.field[index];
+                let current_value = self[index];
                 let start_index = index - (current_value - 1);
-                let new_value_of_right = self.field[start_index] - current_value;
-                self.field[index + 1] = new_value_of_right;
+                let new_value_of_right = self[start_index] - current_value;
+                self[index + 1] = new_value_of_right;
 
                 // phase 2
-                self.field[start_index] = current_value - 1;
+                self[start_index] = current_value - 1;
                 let mut indices_to_update = new_value_of_right - 1;
-                self.field[index] = 0;
+                self[index] = 0;
 
                 // phase 3
                 let mut next_index_offset = 2;
 
                 while indices_to_update > 0 {
-                    self.field[index + next_index_offset] = next_index_offset;
+                    self[index + next_index_offset] = next_index_offset;
 
                     next_index_offset += 1;
                     indices_to_update -= 1;
@@ -347,7 +391,8 @@ enum AdjacentIndices {
     LeftAndRightNonZero,
 }
 
-impl HCJCSkipfield {
+impl RawSkipfield<variant::HCJC> {
+    #[inline(always)]
     fn get_adjacent_indices_state(&self, index: usize) -> AdjacentIndices {
         let left = if index == 0 { 0 } else { self[index - 1] };
 
